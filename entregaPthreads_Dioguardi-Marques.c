@@ -1,4 +1,5 @@
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/time.h>
@@ -6,6 +7,13 @@
 
 #define PI 3.14159265358979323846
 #define DOUBLE_PI PI * 2
+
+/*****************************************************************/
+
+/* Compartidas */
+int NUM_THREADS, block_size_by_threads, N, bs;
+double *A, *B, *C, *T, *R, *M, *R1, *R2, *RA, *RB, average1, average2;
+pthread_mutex_t average_lock1, average_lock2;
 
 /*****************************************************************/
 
@@ -43,6 +51,77 @@ void matmulblks(double *a, double *b, double *c, int n, int bs)
 	}
 }
 
+void calculate(void* id) {
+	int start, i, j, k, f, c, h, offset_i, offset_j, offset_c, offset_f, mini_row_index;
+	start = *((int *)id);
+	start = block_size_by_threads * start;
+	double num, aSin, aCos, *ablk, *bblk, *cblk;
+	double localAverage1 = 0;
+	double localAverage2 = 0;
+
+	// Calcula R1 y R2 y sus promedios
+
+	double mini_size = block_size_by_threads * block_size_by_threads;
+	for (i = start; i < start + mini_size; i++) {
+		num = (1 - T[i]);
+		aSin = sin(M[i]);
+		aCos = cos(M[i]);
+		R1[i] = num * (1 - aCos) + (T[i] * aSin);
+		R2[i] = num * (1 - aSin) + (T[i] * aCos);
+
+		localAverage1 += R1[i];
+		localAverage2 += R2[i];
+	}
+
+	pthread_mutex_lock(&average_lock1);
+	average1 += localAverage1;
+	pthread_mutex_unlock(&average_lock1);
+
+	pthread_mutex_lock(&average_lock2);
+	average2 += localAverage2;
+	pthread_mutex_unlock(&average_lock2);
+
+	// necesitamos una barrera aca?
+
+	// Calcula RA -- tenemos que reemplazar todos los N por (start + block_size_by_threads) o solo el primero?
+	for (i = start; i < start + block_size_by_threads; i += bs)
+	{
+		offset_i = i*N;
+		for (j = 0; j < N; j += bs)
+		{
+			offset_j = j*N;
+			cblk = &RA[offset_i + j];
+
+			for  (k = 0; k < N; k += bs)
+			{
+				ablk = &R1[offset_i + k];
+				bblk = &A[offset_j + k];
+
+				for (f = 0; f < bs; f++)
+				{
+					offset_f = f * N;
+					for (c = 0; c < bs; c++)
+					{
+						offset_c = c * N;
+						mini_row_index = offset_f + c;
+
+						for  (h = 0; h < bs; h++)
+						{
+							cblk[mini_row_index] += ablk[offset_f + h] * bblk[offset_c + h];
+						}
+					}
+				}
+			}
+		}
+	}
+
+	// Aca copypastear lo de arriba para RB
+	//
+	//
+
+
+}
+
 /*****************************************************************/
 
 // Para calcular tiempo - Función de la cátedra
@@ -66,27 +145,32 @@ double randFP(double min, double max) {
 
 // Main del programa
 int main(int argc, char* argv[]){
-	double *A, *B, *C, *T, *R, *M, *RA, *RB, timetick_start, timetick_end;
-	int N, i, j, bs, offset_i, offset_j, row_index;
-	double average = 0;
+	double average, timetick_start, timetick_end;
+	int i, size;
 
 	// Controla los argumentos al programa
-	if ((argc != 2) || ((N = atoi(argv[1])) <= 0) )
+	if ((argc != 3)
+		|| ((N = atoi(argv[1])) <= 0)
+		|| ((NUM_THREADS = atoi(argv[1])) <= 0)
+		|| ((bs = atoi(argv[2])) <= 0)
+		|| ((N % bs) != 0))
 	{
-		printf("\nUsar: %s n\n  n: Dimension de la matriz (nxn X nxn)\n", argv[0]);
+		printf("\nError en los parámetros. Usage: ./%s N T\n", argv[0]);
 		exit(1);
 	}
 
 	// Aloca memoria para las matrices
-	int size = N*N;
+	size = N*N;
 	A = (double*)malloc(sizeof(double)*size); // ordenada por columnas
 	B = (double*)malloc(sizeof(double)*size); // ordenada por columnas
 	C = (double*)malloc(sizeof(double)*size); // ordenada por filas
 	T = (double*)malloc(sizeof(double)*size); // ordenada por filas
 	R = (double*)malloc(sizeof(double)*size); // ordenada por filas
 	M = (double*)malloc(sizeof(double)*size); // ordenada por filas
-	Runo = (double*)malloc(sizeof(double)*size); // ordenada por filas
-	Rdos = (double*)malloc(sizeof(double)*size); // ordenada por filas
+	R1 = (double*)malloc(sizeof(double)*size); // ordenada por filas
+	R2 = (double*)malloc(sizeof(double)*size); // ordenada por filas
+	RA = (double*)malloc(sizeof(double)*size); // ordenada por filas
+	RB = (double*)malloc(sizeof(double)*size); // ordenada por filas
 
 	// Inicializa el randomizador
 	time_t t;
@@ -98,28 +182,32 @@ int main(int argc, char* argv[]){
 		B[i] = randFP(0, 10);
 		T[i] = randFP(0, 10);
 		M[i] = randFP(0, DOUBLE_PI);
+		R1[i] = 0;
+		R2[i] = 0;
 		RA[i] = 0;
 		RB[i] = 0;
 	}
 
-	// Inicia el timer
+	// Inicia el timer (hacerlo antes o despues de setup de hilos)
 	timetick_start = dwalltime();
 
-	// Calcula R y su promedio
-	for (i = 0; i < size; i++) {
-		R[i] = (1 - T[i]) * (1 - cos(M[i])) + (T[i] * sin(M[i]));
-		average += R[i];
+	// Setup hilos
+	pthread_mutex_init(&average_lock1, NULL);
+	pthread_mutex_init(&average_lock2, NULL);
+	pthread_t threads[NUM_THREADS];
+	int ids[NUM_THREADS];
+
+	block_size_by_threads = N / NUM_THREADS;
+
+	// Crea hilos y calcula R
+	for (i = 0; i < NUM_THREADS; i++) {
+		ids[i] = i;
+		pthread_create(&threads[i], NULL, calculate, &ids[i]);
 	}
-	average /= size;
 
-	// Calcula C
-
-	// printf("Multiplying %d x %d matrices\n", n, n);
-	matmulblks(Runo, A, C, N, bs);
-	matmulblks(Rdos, B, C, N, bs);
-
-	for (i = 0; i < size; i++) {
-		C[i] = T[i] + average * (RA[i] + RB[i]);
+	// Une hilos
+	for (i = 0; i < NUM_THREADS; i++) {
+		pthread_join(threads[i], NULL);
 	}
 
 	// Detiene el timer
@@ -129,7 +217,7 @@ int main(int argc, char* argv[]){
 
 	// Verifica el resultado
 	int check = 1;
-	double correct_result = 2 * N + 1;
+	double correct_result = 1;
 	for (i = 0; i < size; i++) {
 		if (C[i] != (correct_result)) {
 			check = 0;
