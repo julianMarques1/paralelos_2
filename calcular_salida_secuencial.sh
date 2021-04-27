@@ -1,6 +1,6 @@
 ejecutar() {
   echo "Entrada = $1:"
-  ./entrega $1
+  ./entregaSecuencial $1
 }
 
 echo 'Output hogareño:' > output.txt

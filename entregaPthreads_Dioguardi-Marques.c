@@ -7,6 +7,44 @@
 #define PI 3.14159265358979323846
 #define DOUBLE_PI PI * 2
 
+/*****************************************************************/
+
+/* Multiply (block)submatrices */
+void blkmul(double *ablk, double *bblk, double *cblk, int n, int bs)
+{
+	int i, j, k;    /* Guess what... again... */
+
+	for (i = 0; i < bs; i++)
+	{
+		for (j = 0; j < bs; j++)
+		{
+			for  (k = 0; k < bs; k++)
+			{
+				cblk[i*n + j] += ablk[i*n + k] * bblk[j*n + k];
+			}
+		}
+	}
+}
+
+/* Multiply square matrices, blocked version */
+void matmulblks(double *a, double *b, double *c, int n, int bs)
+{
+	int i, j, k;    /* Guess what... */
+
+	for (i = 0; i < n; i += bs)
+	{
+		for (j = 0; j < n; j += bs)
+		{
+			for  (k = 0; k < n; k += bs)
+			{
+				blkmul(&a[i*n + k], &b[j*n + k], &c[i*n + j], n, bs);
+			}
+		}
+	}
+}
+
+/*****************************************************************/
+
 // Para calcular tiempo - Función de la cátedra
 double dwalltime(){
 	double sec;
@@ -24,10 +62,12 @@ double randFP(double min, double max) {
 	return min + (rand() / div);
 }
 
+/*****************************************************************/
+
 // Main del programa
 int main(int argc, char* argv[]){
 	double *A, *B, *C, *T, *R, *M, *RA, *RB, timetick_start, timetick_end;
-	int N, i, j, k, offset_i, offset_j, row_index;
+	int N, i, j, bs, offset_i, offset_j, row_index;
 	double average = 0;
 
 	// Controla los argumentos al programa
@@ -45,8 +85,8 @@ int main(int argc, char* argv[]){
 	T = (double*)malloc(sizeof(double)*size); // ordenada por filas
 	R = (double*)malloc(sizeof(double)*size); // ordenada por filas
 	M = (double*)malloc(sizeof(double)*size); // ordenada por filas
-	RA = (double*)malloc(sizeof(double)*size); // ordenada por filas
-	RB = (double*)malloc(sizeof(double)*size); // ordenada por filas
+	Runo = (double*)malloc(sizeof(double)*size); // ordenada por filas
+	Rdos = (double*)malloc(sizeof(double)*size); // ordenada por filas
 
 	// Inicializa el randomizador
 	time_t t;
@@ -54,10 +94,10 @@ int main(int argc, char* argv[]){
 
 	// Inicializa las matrices A, B, T, M, RA, y RB
 	for(i = 0; i < size ; i++) {
-		A[i] = 1.0;
-		B[i] = 1.0;
-		T[i] = 1.0;
-		M[i] = PI/2;
+		A[i] = randFP(0, 10);
+		B[i] = randFP(0, 10);
+		T[i] = randFP(0, 10);
+		M[i] = randFP(0, DOUBLE_PI);
 		RA[i] = 0;
 		RB[i] = 0;
 	}
@@ -73,31 +113,10 @@ int main(int argc, char* argv[]){
 	average /= size;
 
 	// Calcula C
-	for (i = 0; i < N; i++) {
-		offset_i = i*N;
 
-		for (j = 0; j < N; j++) {
-			offset_j = j*N;
-			row_index = offset_i + j;
-
-			for (k = 0; k < N; k++) {
-				RA[row_index] += R[offset_i + k] * A[k + offset_j];
-			}
-		}
-	}
-
-	for (i = 0; i < N; i++) {
-		offset_i = i*N;
-
-		for (j = 0; j < N; j++) {
-			offset_j = j*N;
-			row_index = offset_i + j;
-
-			for (k = 0; k < N; k++) {
-				RB[row_index] += R[offset_i + k] * B[k + offset_j];
-			}
-		}
-	}
+	// printf("Multiplying %d x %d matrices\n", n, n);
+	matmulblks(Runo, A, C, N, bs);
+	matmulblks(Rdos, B, C, N, bs);
 
 	for (i = 0; i < size; i++) {
 		C[i] = T[i] + average * (RA[i] + RB[i]);
@@ -110,7 +129,7 @@ int main(int argc, char* argv[]){
 
 	// Verifica el resultado
 	int check = 1;
-	double correct_result = 2*N+1;
+	double correct_result = 2 * N + 1;
 	for (i = 0; i < size; i++) {
 		if (C[i] != (correct_result)) {
 			check = 0;
@@ -118,10 +137,10 @@ int main(int argc, char* argv[]){
 		}
 	}
 	if (check) {
-   		printf("Multiplicacion de matrices resultado correcto\n");
+		printf("Multiplicacion de matrices resultado correcto\n");
 	}
 	else {
-   		printf("Multiplicacion de matrices resultado erroneo\n");
+		printf("Multiplicacion de matrices resultado erroneo\n");
 	}
 
 	// Libera memoria
