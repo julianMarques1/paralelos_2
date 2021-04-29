@@ -12,44 +12,12 @@
 
 /* Compartidas */
 int NUM_THREADS, block_size_by_threads, N, bs;
-double *A, *B, *C, *T, *R, *M, *R1, *R2, *RA, *RB, average1, average2;
+double *A, *B, *C, *T, *R, *M, *R1, *R2, *RA, *RB, average, average1, average2;
 pthread_mutex_t average_lock1, average_lock2;
+pthread_barrier_t barrier;
 
 /*****************************************************************/
 
-/* Multiply (block)submatrices */
-void blkmul(double *ablk, double *bblk, double *cblk, int n, int bs)
-{
-	int i, j, k;    /* Guess what... again... */
-
-	for (i = 0; i < bs; i++)
-	{
-		for (j = 0; j < bs; j++)
-		{
-			for  (k = 0; k < bs; k++)
-			{
-				cblk[i*n + j] += ablk[i*n + k] * bblk[j*n + k];
-			}
-		}
-	}
-}
-
-/* Multiply square matrices, blocked version */
-void matmulblks(double *a, double *b, double *c, int n, int bs)
-{
-	int i, j, k;    /* Guess what... */
-
-	for (i = 0; i < n; i += bs)
-	{
-		for (j = 0; j < n; j += bs)
-		{
-			for  (k = 0; k < n; k += bs)
-			{
-				blkmul(&a[i*n + k], &b[j*n + k], &c[i*n + j], n, bs);
-			}
-		}
-	}
-}
 
 void calculate(void* id) {
 	int start, i, j, k, f, c, h, offset_i, offset_j, offset_c, offset_f, mini_row_index;
@@ -61,8 +29,8 @@ void calculate(void* id) {
 
 	// Calcula R1 y R2 y sus promedios
 
-	double mini_size = block_size_by_threads * block_size_by_threads;
-	for (i = start; i < start + mini_size; i++) {
+	double end = block_size_by_threads * block_size_by_threads + start;
+	for (i = start; i < end; i++) {
 		num = (1 - T[i]);
 		aSin = sin(M[i]);
 		aCos = cos(M[i]);
@@ -81,45 +49,71 @@ void calculate(void* id) {
 	average2 += localAverage2;
 	pthread_mutex_unlock(&average_lock2);
 
-	// necesitamos una barrera aca?
+	pthread_barrier_wait(&barrier);
 
-	// Calcula RA -- tenemos que reemplazar todos los N por (start + block_size_by_threads) o solo el primero?
+	if (id == 0) {
+		average = average1 * average2;
+	}
+
 	for (i = start; i < start + block_size_by_threads; i += bs)
 	{
-		offset_i = i*N;
-		for (j = 0; j < N; j += bs)
+		offset_i = i * block_size_by_threads;
+		for (j = 0; j < block_size_by_threads; j += bs)
 		{
-			offset_j = j*N;
+			offset_j = j * block_size_by_threads;
 			cblk = &RA[offset_i + j];
 
-			for  (k = 0; k < N; k += bs)
+			for  (k = 0; k < block_size_by_threads; k += bs)
 			{
 				ablk = &R1[offset_i + k];
 				bblk = &A[offset_j + k];
 
 				for (f = 0; f < bs; f++)
 				{
-					offset_f = f * N;
+					offset_f = f * block_size_by_threads;
 					for (c = 0; c < bs; c++)
 					{
-						offset_c = c * N;
+						offset_c = c * block_size_by_threads;
 						mini_row_index = offset_f + c;
 
 						for  (h = 0; h < bs; h++)
 						{
 							cblk[mini_row_index] += ablk[offset_f + h] * bblk[offset_c + h];
-						}
-					}
-				}
-			}
-		}
+	} } } } } }
+
+	for (i = start; i < start + block_size_by_threads; i += bs)
+	{
+		offset_i = i * block_size_by_threads;
+		for (j = 0; j < block_size_by_threads; j += bs)
+		{
+			offset_j = j * block_size_by_threads;
+			cblk = &RB[offset_i + j];
+
+			for  (k = 0; k < block_size_by_threads; k += bs)
+			{
+				ablk = &R2[offset_i + k];
+				bblk = &B[offset_j + k];
+
+				for (f = 0; f < bs; f++)
+				{
+					offset_f = f * block_size_by_threads;
+					for (c = 0; c < bs; c++)
+					{
+						offset_c = c * block_size_by_threads;
+						mini_row_index = offset_f + c;
+
+						for  (h = 0; h < bs; h++)
+						{
+							cblk[mini_row_index] += ablk[offset_f + h] * bblk[offset_c + h];
+	} } } } } }
+
+
+	pthread_barrier_wait(&barrier);
+
+	// Calcula C
+	for (i = start; i < end; i++) {
+		C[i] = T[i] + average * (RA[i] + RB[i]);
 	}
-
-	// Aca copypastear lo de arriba para RB
-	//
-	//
-
-
 }
 
 /*****************************************************************/
@@ -176,7 +170,7 @@ int main(int argc, char* argv[]){
 	time_t t;
 	srand((unsigned) time(&t));
 
-	// Inicializa las matrices A, B, T, M, RA, y RB
+	// Inicializa las matrices A, B, T, M, R1, R2, RA, y RB
 	for(i = 0; i < size ; i++) {
 		A[i] = randFP(0, 10);
 		B[i] = randFP(0, 10);
@@ -191,9 +185,14 @@ int main(int argc, char* argv[]){
 	// Inicia el timer (hacerlo antes o despues de setup de hilos)
 	timetick_start = dwalltime();
 
-	// Setup hilos
+	// Setup mutex
 	pthread_mutex_init(&average_lock1, NULL);
 	pthread_mutex_init(&average_lock2, NULL);
+
+	// Setup barrera
+	pthread_barrier_init(&barrier, NULL, NUM_THREADS);
+
+	// Setup hilos
 	pthread_t threads[NUM_THREADS];
 	int ids[NUM_THREADS];
 
